@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ plan.app_name }}-config
+  namespace: {{ namespace }}
+  labels:
+    managed-by: idp-framework
+{% if plan.config_data %}
+data:
+{% for key, value in plan.config_data.items() %}
+  {{ key }}: |
+    {{ value | indent(4) }}
+{% endfor %}
+{% endif %}

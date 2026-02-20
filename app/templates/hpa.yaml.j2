@@ -1,0 +1,21 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ plan.app_name }}-hpa
+  namespace: {{ namespace }}
+  labels:
+    managed-by: idp-framework
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ plan.app_name }}
+  minReplicas: {{ plan.autoscaling.min_replicas if plan.autoscaling is not none else 1 }}
+  maxReplicas: {{ plan.autoscaling.max_replicas if plan.autoscaling is not none else 1 }}
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: {{ plan.autoscaling.cpu_threshold_percent if plan.autoscaling is not none else 80 }}

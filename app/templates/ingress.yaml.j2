@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ plan.app_name }}-ingress
+  namespace: {{ namespace }}
+  labels:
+    managed-by: idp-framework
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: {{ plan.networking.ingress_host if plan.networking is not none else 'example.com' }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: {{ plan.app_name }}-svc
+            port:
+              number: {{ plan.service_port | default(80) }}
