@@ -29,6 +29,82 @@ def process_user_intent(request: IntentRequest):
 
         # Check if intent was ambiguous
         if orchestration.plans and orchestration.plans[0].action == "ambiguous":
+            # Distinguish between generic ambiguity and specific validation errors
+            ambiguous_app = orchestration.plans[0].app_name
+            if ambiguous_app == "invalid_replicas":
+                return {
+                    "intent_received": request.user_input,
+                    "status": "ambiguous_intent",
+                    "message": "Invalid replica count. A deployment must have at least 1 replica.",
+                    "suggestions": [
+                        "Specify a positive number of replicas (e.g., 'deploy httpd with 3 replicas')",
+                        "Use at least 1 replica for any deployment",
+                        "Or remove the replica count entirely for a default of 1"
+                    ],
+                    "example_intents": [
+                        "Deploy httpd with 3 replicas",
+                        "Deploy nginx with 1 replica",
+                        "Deploy httpd"
+                    ]
+                }
+            if ambiguous_app == "invalid_port":
+                return {
+                    "intent_received": request.user_input,
+                    "status": "ambiguous_intent",
+                    "message": "Invalid port number. Port must be between 1 and 65535.",
+                    "suggestions": [
+                        "Specify a port between 1 and 65535 (e.g., 80, 443, 8080, 3000)",
+                        "Port 0 is reserved by the system",
+                        "Ports 6443, 2379, 2380, 10250-10259 are reserved for K8s control plane"
+                    ],
+                    "example_intents": [
+                        "Deploy nginx with 3 replicas on port 80",
+                        "Deploy httpd on port 8080",
+                        "Deploy postgres with 1 replica"
+                    ]
+                }
+
+        # Post-plan validation: catch any create/update action with replicas < 1
+        for plan in orchestration.plans:
+            if plan.action in ["create", "update"] and plan.replicas < 1:
+                return {
+                    "intent_received": request.user_input,
+                    "status": "ambiguous_intent",
+                    "message": "Invalid replica count. A deployment must have at least 1 replica.",
+                    "suggestions": [
+                        "Specify a positive number of replicas (e.g., 'deploy httpd with 3 replicas')",
+                        "Use at least 1 replica for any deployment",
+                        "Or remove the replica count entirely for a default of 1"
+                    ],
+                    "example_intents": [
+                        "Deploy httpd with 3 replicas",
+                        "Deploy nginx with 1 replica",
+                        "Deploy httpd"
+                    ]
+                }
+
+            # Post-plan validation: catch ports outside 1-65535, reserved, or NodePort as container_port
+            if plan.action in ["create", "update"]:
+                for port_field in ["service_port", "container_port"]:
+                    port_val = getattr(plan, port_field, None)
+                    if port_val is not None:
+                        if port_val < 1 or port_val > 65535:
+                            return {"intent_received": request.user_input, "status": "ambiguous_intent",
+                                    "message": f"Invalid port {port_val}. Port must be between 1 and 65535.",
+                                    "suggestions": ["Specify a port number between 1 and 65535", "For web servers, use port 80", "For databases, use the standard port (e.g., 5432 for postgres)"],
+                                    "example_intents": ["Deploy nginx with 3 replicas on port 80", "Deploy httpd on port 8080", "Deploy postgres with 1 replica"]}
+                        if port_val == 0:
+                            return {"intent_received": request.user_input, "status": "ambiguous_intent",
+                                    "message": "Port 0 is reserved by the system and cannot be used.",
+                                    "suggestions": ["Specify a non-zero port number", "For web servers, use port 80", "For databases, use the standard port (e.g., 5432 for postgres)"],
+                                    "example_intents": ["Deploy nginx with 3 replicas on port 80", "Deploy httpd on port 8080", "Deploy postgres with 1 replica"]}
+                        if port_field == "container_port" and 30000 <= port_val <= 32767:
+                            return {"intent_received": request.user_input, "status": "ambiguous_intent",
+                                    "message": f"Port {port_val} is in the NodePort range (30000-32767) and cannot be used as a container port.",
+                                    "suggestions": ["Use a standard application port for the container (e.g., 80 for web servers)", "If you need NodePort, specify it as a service port instead"],
+                                    "example_intents": ["Deploy nginx with 3 replicas on service port 30080", "Deploy httpd on port 80"]}
+
+        if orchestration.plans and orchestration.plans[0].action == "ambiguous":
             return {
                 "intent_received": request.user_input,
                 "status": "ambiguous_intent",

@@ -74,8 +74,9 @@ class ClusterScanner:
                         deployment_pod_requests[key]["mem"] += self._parse_memory(r.limits.get("memory", "0"))
                 deployment_pod_requests[key]["pod_count"] += 1
 
-            # 3. Fetch Deployments and build workload list
+            # 3. Fetch Deployments and StatefulSets, build workload list
             deployments = self.apps_v1.list_deployment_for_all_namespaces()
+            statefulsets = self.apps_v1.list_stateful_set_for_all_namespaces()
             workloads = []
             total_actual_cpu = 0
             total_actual_mem = 0
@@ -101,6 +102,7 @@ class ClusterScanner:
                 workloads.append({
                     "name": dep.metadata.name,
                     "namespace": ns,
+                    "type": "deployment",
                     "replicas": dep.spec.replicas,
                     "actual_usage": {
                         "cpu": f"{int(pod_usage['cpu'])}m",
@@ -111,6 +113,38 @@ class ClusterScanner:
                         "memory": f"{avg_req_mem}Mi"
                     },
                     "status": "Healthy" if (dep.status.ready_replicas or 0) >= dep.spec.replicas else "Degraded"
+                })
+
+            for sts in statefulsets.items:
+                ns = sts.metadata.namespace
+                key = f"{ns}-{sts.metadata.name}"
+
+                pod_usage = {"cpu": 0, "mem": 0}
+                for k, val in usage_map.items():
+                    if k.startswith(key):
+                        pod_usage = val
+                        break
+                total_actual_cpu += pod_usage["cpu"]
+                total_actual_mem += pod_usage["mem"]
+
+                req = deployment_pod_requests.get(key, {"cpu": 0, "mem": 0, "pod_count": 0})
+                avg_req_cpu = int(req["cpu"] / req["pod_count"]) if req["pod_count"] > 0 else 0
+                avg_req_mem = int(req["mem"] / req["pod_count"]) if req["pod_count"] > 0 else 0
+
+                workloads.append({
+                    "name": sts.metadata.name,
+                    "namespace": ns,
+                    "type": "statefulset",
+                    "replicas": sts.spec.replicas,
+                    "actual_usage": {
+                        "cpu": f"{int(pod_usage['cpu'])}m",
+                        "memory": f"{int(pod_usage['mem'])}Mi"
+                    },
+                    "requested_usage": {
+                        "cpu": f"{avg_req_cpu}m",
+                        "memory": f"{avg_req_mem}Mi"
+                    },
+                    "status": "Healthy" if (sts.status.ready_replicas or 0) >= sts.spec.replicas else "Degraded"
                 })
 
             # 4. Node Capacity for Totals (use allocatable for scheduler view)

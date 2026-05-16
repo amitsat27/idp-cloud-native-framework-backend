@@ -19,7 +19,7 @@ class OrchestrationPlanner:
             return True
         
         # Check if intent has clear action keyword
-        action_keywords = ['deploy', 'create', 'delete', 'scale', 'update', 'setup', 'install', 'remove']
+        action_keywords = ['deploy', 'create', 'delete', 'scale', 'update', 'setup', 'install', 'remove', 'add']
         has_action = any(keyword in intent_lower for keyword in action_keywords)
         
         if not has_action:
@@ -78,7 +78,95 @@ class OrchestrationPlanner:
         }
         """
 
+    RESERVED_K8S_PORTS = {6443, 2379, 2380, 10250, 10251, 10252, 10255, 10257, 10259, 10256}
+
+    def _check_invalid_port(self, intent: str) -> Optional[Tuple[OrchestrationPlan, Dict]]:
+        """Check if intent requests a port outside 1-65535 or a reserved system port."""
+        intent_lower = intent.lower().strip()
+        port_match = re.search(r'(?:port|on\s+port|:)\s*(\d+)', intent_lower)
+        if port_match:
+            port_num = int(port_match.group(1))
+            reason = None
+            if port_num == 0:
+                reason = f"Port 0 is reserved by the system and cannot be used."
+            elif port_num < 1 or port_num > 65535:
+                reason = f"Port {port_num} is outside the valid range 1-65535."
+            elif port_num in self.RESERVED_K8S_PORTS:
+                reason = f"Port {port_num} is reserved for Kubernetes control plane components."
+            if reason:
+                plan = ExecutionPlan(
+                    app_name="invalid_port",
+                    image=None,
+                    replicas=0,
+                    service_port=None,
+                    container_port=None,
+                    target_namespace="default",
+                    action="ambiguous",
+                    networking=None,
+                    autoscaling=None,
+                    storage_gb=None,
+                    config_data=None,
+                    secret_data=None,
+                    resources=None,
+                    reasoning=f"{reason} Kubernetes ports must be a 16-bit unsigned integer (1-65535).",
+                    summary=f"Invalid port {port_num} - {reason}"
+                )
+                orchestration = OrchestrationPlan(
+                    overall_summary=f"Invalid request: {reason}",
+                    plans=[plan]
+                )
+                return orchestration, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        return None
+
+    def _check_invalid_replicas(self, intent: str) -> Optional[Tuple[OrchestrationPlan, Dict]]:
+        """Check if intent requests 0 or negative replicas and return a suggestion response."""
+        intent_lower = intent.lower().strip()
+        # Match patterns like "0 replicas", "zero replicas", "with 0", "to 0"
+        zero_replica_patterns = [
+            r'\b0\s+replicas?\b',
+            r'\bzero\s+replicas?\b',
+            r'with\s+0\b',
+            r'to\s+0\b',
+            r'scale\s+\w+\s+to\s+0\b',
+            r'\b0\s+pods?\b',
+        ]
+        has_zero = any(re.search(p, intent_lower) for p in zero_replica_patterns)
+        if has_zero:
+            plan = ExecutionPlan(
+                app_name="invalid_replicas",
+                image=None,
+                replicas=0,
+                service_port=None,
+                container_port=None,
+                target_namespace="default",
+                action="ambiguous",
+                networking=None,
+                autoscaling=None,
+                storage_gb=None,
+                config_data=None,
+                secret_data=None,
+                resources=None,
+                reasoning="Replica count must be at least 1. Deploying with 0 replicas is not valid.",
+                summary="Invalid replica count - minimum is 1"
+            )
+            orchestration = OrchestrationPlan(
+                overall_summary="Invalid request: replica count must be at least 1",
+                plans=[plan]
+            )
+            return orchestration, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        return None
+
     def generate_plan(self, intent: str, context: str) -> Tuple[OrchestrationPlan, Dict]:
+        # Check for invalid replica count (0 or negative) first
+        invalid_replicas = self._check_invalid_replicas(intent)
+        if invalid_replicas:
+            return invalid_replicas
+
+        # Check for invalid port number (outside 1-65535)
+        invalid_port = self._check_invalid_port(intent)
+        if invalid_port:
+            return invalid_port
+
         # Check for ambiguous intent first
         if self._is_ambiguous_intent(intent):
             # Return a special ambiguous response
@@ -138,7 +226,7 @@ class OrchestrationPlanner:
         3. Identify the 'target_namespace' from user intent (e.g., 'staging', 'production').
         4. IF no namespace is mentioned, YOU MUST set "target_namespace": "default". 
         5. IF the intent is ONLY to create/delete a namespace (e.g., 'create namespace staging'): Use action 'create_namespace', replicas: 0, and image: null.
-        6. IF the intent is to delete an app: Set "action": "delete".
+         6. IF the intent is to delete or remove an app: Set "action": "delete". The word "remove" is equivalent to "delete".
         7. Identify the 'app_name' from user intent (e.g., 'nginx-web-server').
          8. Check if the exact 'app_name' exists IN the 'target_namespace' using the CLUSTER INVENTORY list below. If it exists in that namespace, use "no_action" (regardless of replica count — the system handles detection automatically).
         9. IF "app_name in target_namespace" IS in the list: Set "action": "update".
@@ -166,7 +254,7 @@ class OrchestrationPlanner:
         22. BASE IMAGE RULE: For utility images like alpine or busybox, do not assume a service is needed. Set service_port: null and networking: null unless the user explicitly asks to "expose" it.
         23. IMAGE CATEGORIZATION RULE: Before generating the plan, classify the image into one of these categories:
 
-            WEB_SERVER: (e.g., nginx, httpd, apache) -> Action: Create Deployment + Service; set expose_externally: true.
+            WEB_SERVER: (e.g., nginx, httpd, apache, python fastapi, unvicorn) -> Action: Create Deployment + Service; set expose_externally: true.
 
             DATABASE: (e.g., postgres, mysql, mongodb) -> Action: Create Deployment (or StatefulSet) + Service; set storage_gb to at least 10 if not specified.
 
@@ -193,7 +281,8 @@ class OrchestrationPlanner:
             - Set "replicas": 0, "image": null.
             - Set "action": "create".
             The framework will create a ConfigMap resource ONLY (no Deployment, no Service).
-        26. MINIMAL DEPLOYMENT RULE: If the intent uses the word 'deploy' without mentioning 'service', 'access', 'port', or 'expose' (e.g., 'deploy alpine'), you MUST set networking: null. The framework will then only create the Deployment and skip the Service resource.
+         26. MINIMAL DEPLOYMENT RULE: If the intent uses the word 'deploy' without mentioning 'service', 'access', 'port', or 'expose' (e.g., 'deploy alpine'), you MUST set networking: null. The framework will then only create the Deployment and skip the Service resource.
+         28. MINIMUM REPLICA RULE: The "replicas" field MUST be at least 1 for any "create" or "update" action. A value of 0 is invalid because it would deploy zero pods. If the user requests 0 replicas (e.g., "deploy httpd with 0 replicas"), ignore their request and treat it as 1 replica minimum.
         27. STATEFULSET RULE: If the application is a DATABASE (postgres, mysql, mongodb, mariadb, cassandra, redis, elasticsearch, rabbitmq, kafka, zookeeper, minio) OR if the user requests persistent storage (storage_gb is set), you MUST set "resource_kind": "statefulset". For all other applications (web servers, app runtimes, utilities), set "resource_kind": "deployment". StatefulSets provide stable pod identities and automatic per-pod PVCs via volumeClaimTemplates.
 
         DUPLICATE CHECK RULE - MANDATORY:
@@ -205,7 +294,9 @@ class OrchestrationPlanner:
         - If found with DIFFERENT replicas → action: "update"
         - If NOT found in inventory → action: "create"
 
-        NETWORKING RULES (DO NOT MISS):
+         29. PORT VALIDATION RULE: Port numbers MUST be between 1 and 65535. Port 0 is reserved by the system and invalid. Ports 6443, 2379, 2380, 10250-10259 are reserved for Kubernetes control plane. Ports 30000-32767 are valid for Service ports (NodePort) but MUST NOT be used as container_port. If the user requests an invalid port, use your judgment to pick the correct default for the image (e.g., 80 for web servers, 5432 for postgres, 6379 for redis). NEVER generate an invalid port number in the output.
+
+         NETWORKING RULES (DO NOT MISS):
         - 'expose_internally': Set to true.
         - 'expose_externally': Set to true if it is a web server or web app or user asks for public access.
         - 'container_port': Use the native port for the image (e.g. Nginx=80, Redis=6379).
@@ -272,6 +363,9 @@ class OrchestrationPlanner:
             for item in plan_dict.get("plans", []):
                 raw_name = item.get("app_name") or item.get("target_namespace") or "resource"
                 item["app_name"] = re.sub(r'[^a-z0-9\-]', '-', str(raw_name).lower()).strip('-')
+                # Fix null cpu_threshold_percent — set to default 80
+                if item.get("autoscaling") and item["autoscaling"].get("cpu_threshold_percent") is None:
+                    item["autoscaling"]["cpu_threshold_percent"] = 80
 
             # Build orchestration object
             orchestration = OrchestrationPlan.model_validate(plan_dict)
@@ -323,14 +417,20 @@ class OrchestrationPlanner:
         app_name = None
         requested_replicas = 1
         target_namespace = "default"
+        action_keyword = None
         
         for i, word in enumerate(words):
-            if word in ["deploy", "scale", "create"]:
+            if word in ["deploy", "scale", "create", "add", "remove"]:
                 if i + 1 < len(words):
                     app_name = words[i + 1]
+                    action_keyword = word
                 break
         
         if not app_name:
+            return None
+        
+        # If the intent is "scale", "add", or "remove", it's never a duplicate
+        if action_keyword in ["scale", "add", "remove"]:
             return None
         
         # Clean app name (only alphanumeric and hyphens; replace slashes with hyphens)
@@ -349,6 +449,11 @@ class OrchestrationPlanner:
         # Check if app exists with same replicas in same namespace
         for workload in existing_workloads:
             if workload.get("name") == app_name and workload.get("namespace") == target_namespace:
+                
+                # If requested replicas differ from existing, it's an update — not a duplicate
+                existing_replicas = workload.get("replicas", 0)
+                if requested_replicas != existing_replicas:
+                    return None
                 
                 # Found duplicate - return no_action plan
                 plan = ExecutionPlan(

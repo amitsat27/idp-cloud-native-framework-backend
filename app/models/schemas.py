@@ -18,7 +18,7 @@ class ScalingConfig(BaseModel):
     """Configuration for Horizontal Pod Autoscaler (HPA)"""
     min_replicas: int = Field(1, ge=1)
     max_replicas: int = Field(5, le=50)
-    cpu_threshold_percent: int = Field(80, ge=10, le=95)
+    cpu_threshold_percent: Optional[int] = Field(80, ge=10, le=95)
 
 class ExecutionPlan(BaseModel):
     app_name: str = Field(...)
