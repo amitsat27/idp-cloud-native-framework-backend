@@ -30,7 +30,7 @@ class ExecutionPlan(BaseModel):
 
     target_namespace: str = Field("default", description="The namespace identified by the AI")
 
-    action: str = Field(..., pattern="^(create|update|delete|create_namespace|delete_namespace)$")
+    action: str = Field(..., pattern="^(create|update|delete|create_namespace|delete_namespace|no_action|ambiguous)$")
 
     networking: Optional[NetworkingConfig] = None
     autoscaling: Optional[ScalingConfig] = None # Support for HPA
@@ -46,6 +46,11 @@ class ExecutionPlan(BaseModel):
     resources: Optional[Dict[str, Dict[str, str]]] = Field(
         None,
         description="K8s resource requirements: {requests: {cpu, memory}, limits: {cpu, memory}}"
+    )
+
+    resource_kind: str = Field(
+        "deployment",
+        description="K8s resource type: 'deployment' for stateless apps, 'statefulset' for stateful apps (databases, caches)"
     )
 
     reasoning: str = Field(...)

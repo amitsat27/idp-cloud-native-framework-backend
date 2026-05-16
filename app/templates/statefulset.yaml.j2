@@ -1,11 +1,13 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: StatefulSet
 metadata:
   name: {{ plan.app_name }}
   namespace: {{ namespace }}
   labels:
+    app: {{ plan.app_name }}
     managed-by: idp-framework
 spec:
+  serviceName: {{ plan.app_name }}-headless
   replicas: {{ plan.replicas }}
   selector:
     matchLabels:
@@ -37,21 +39,26 @@ spec:
         {% endif %}
         volumeMounts:
         {% if plan.storage_gb %}
-        - name: data-volume
+        - name: data
           mountPath: /data
         {% endif %}
         {% if plan.config_data %}
         - name: config-volume
-          mountPath: /etc/config # Files will appear here
+          mountPath: /etc/config
         {% endif %}
       volumes:
-      {% if plan.storage_gb %}
-      - name: data-volume
-        persistentVolumeClaim:
-          claimName: {{ plan.app_name }}-pvc
-      {% endif %}
       {% if plan.config_data %}
       - name: config-volume
         configMap:
           name: {{ plan.app_name }}-config
       {% endif %}
+  {% if plan.storage_gb %}
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: {{ plan.storage_gb }}Gi
+  {% endif %}

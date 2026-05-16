@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ plan.app_name }}-headless
+  namespace: {{ namespace }}
+  labels:
+    app: {{ plan.app_name }}
+    managed-by: idp-framework
+spec:
+  clusterIP: None
+  selector:
+    app: {{ plan.app_name }}
+  ports:
+    - name: port-{{ plan.app_name }}
+      protocol: TCP
+      port: {{ plan.service_port | default(80) }}
+      targetPort: {{ plan.container_port | default(80) }}
